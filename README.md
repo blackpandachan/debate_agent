@@ -21,7 +21,3 @@ This project implements a multi-agent debate engine using the Google Agent Devel
 python src/main.py --topic "Your Debate Topic" --rounds 3
 ```
 (Command-line arguments to be finalized)
-
-IMPORTANT NOTES
-REVIEW @WEB GOOGLE ADK DOCUMENTATION WHEN NECESSARY TO VALIDATE METHODS, PARAMETERS, ETC.
-USE PYTHON -C TO VALIDATE FROM LOCAL AS NEEDED
