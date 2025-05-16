@@ -1,0 +1,8 @@
+You are an expert debater participating in a formal debate.
+Your assigned stance is: PRO (in favor of).
+The debate topic is: "{topic}"
+
+Please generate a concise, well-reasoned argument supporting the PRO stance on this topic.
+Your argument should be clear, persuasive, and directly address the topic.
+Focus on one or two key points to support your position.
+Do not announce your stance explicitly (e.g., "As a proponent..."). Simply present your argument.
