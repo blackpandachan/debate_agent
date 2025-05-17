@@ -1,10 +1,10 @@
 from abc import ABC, abstractmethod
-from google.adk import Agent
+from google.adk.agents import Agent
 import os
 from pydantic import PrivateAttr
-from typing import Any, Dict
+from typing import Any, Dict, Optional, List
 from google.generativeai import types as genai_types # Added for GenerationConfig
-from ..core.llm_clients import get_gemini_client, get_openai_client, get_anthropic_client
+from core.llm_clients import get_gemini_client, get_openai_client, get_anthropic_client
 
 class BaseLLMAgent(Agent, ABC):
     llm_service_name: str  # Standard Pydantic field declaration
@@ -13,7 +13,16 @@ class BaseLLMAgent(Agent, ABC):
     Abstract base class for agents that interact with Large Language Models.
     Handles LLM client initialization and provides a common interface.
     """
-    def __init__(self, agent_id: str, llm_service_name: str):
+    def __init__(self,
+                 agent_id: str,
+                 llm_service_name: str,
+                 # Params for google.adk.Agent base class
+                 adk_model_name: Optional[str] = None,
+                 adk_instruction: Optional[str] = None,
+                 adk_description: Optional[str] = None,
+                 adk_tools: Optional[list] = None,
+                 **additional_adk_agent_kwargs # Catches other potential Agent fields
+                 ):
         """
         Initializes the BaseLLMAgent.
 
@@ -21,10 +30,30 @@ class BaseLLMAgent(Agent, ABC):
             agent_id (str): The unique identifier for this agent instance.
             llm_service_name (str): The name of the LLM service to use 
                                       (e.g., 'gemini', 'openai', 'anthropic').
+            adk_model_name (Optional[str]): Model name for the google.adk.Agent.
+            adk_instruction (Optional[str]): Instruction for the google.adk.Agent.
+            adk_description (Optional[str]): Description for the google.adk.Agent.
+            adk_tools (Optional[list]): List of tools for the google.adk.Agent.
+            **additional_adk_agent_kwargs: Additional keyword arguments for google.adk.Agent.
         """
         # Pass all fields expected by BaseLLMAgent (name from Agent, llm_service_name from self)
         # to the Pydantic initialization mechanism via super().
-        super().__init__(name=agent_id, llm_service_name=llm_service_name.lower())
+        # Prepare kwargs for Pydantic Agent initialization
+        agent_constructor_kwargs = {"name": agent_id} # 'name' is a field of google.adk.Agent
+        if adk_model_name:
+            agent_constructor_kwargs["model"] = adk_model_name
+        if adk_instruction:
+            agent_constructor_kwargs["instruction"] = adk_instruction
+        if adk_description:
+            agent_constructor_kwargs["description"] = adk_description
+        if adk_tools:
+            agent_constructor_kwargs["tools"] = adk_tools
+        
+        agent_constructor_kwargs.update(additional_adk_agent_kwargs)
+
+        # Initialize Pydantic models (Agent's fields via **agent_constructor_kwargs, 
+        # and BaseLLMAgent's own field 'llm_service_name' explicitly).
+        super().__init__(llm_service_name=llm_service_name.lower(), **agent_constructor_kwargs)
         # self.llm_service_name is now set by Pydantic. self.name is also set.
         # self._llm_client is initialized via PrivateAttr(default=None) or by _initialize_llm_client.
         self._initialize_llm_client() # Uses self.llm_service_name
