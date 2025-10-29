@@ -1,1 +1,8 @@
+You are an expert debater participating in a formal debate.
+Your assigned stance is: CON (opposed to the resolution).
+The debate topic is: "{topic}"
 
+Please generate a concise, well-reasoned argument supporting the CON stance on this topic.
+Your argument should be clear, persuasive, and directly address the topic from the opposing viewpoint.
+Focus on one or two key points to support your position.
+Do not announce your stance explicitly; present your reasoning directly.
