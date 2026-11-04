@@ -126,6 +126,14 @@ async def _finish(runner: Runner, session_id: str, usage: dict[str, int]) -> Non
         f"\nSession {session_id} · {usage['calls']} model calls ·"
         f" {usage['prompt']:,} input / {usage['output']:,} output tokens"
     )
+    cost = session.state.get("cost_estimate")
+    if cost:
+        parts = [
+            f"{m['model']} ${m['usd']:.4f}" if m["usd"] is not None else f"{m['model']} n/a"
+            for m in cost["models"]
+        ]
+        parts.append(f"search ({cost['search_queries']} queries) ${cost['search_usd']:.4f}")
+        print(f"Estimated cost for this debate: ${cost['total_usd']:.4f}  ({', '.join(parts)})")
     if session.state.get("winner"):
         await _export(runner, session_id, session.state.get("topic", ""))
     else:
