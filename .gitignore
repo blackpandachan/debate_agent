@@ -14,3 +14,7 @@ __pycache__/
 *.njsproj
 *.sln
 *.sdf
+
+# Debate output
+debate_transcript.md
+.pytest_cache/
