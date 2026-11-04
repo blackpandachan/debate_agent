@@ -1,16 +1,35 @@
-.venv/
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Secrets
 .env
+.env.*
+!.env.example
+
+# ADK local storage (sessions SQLite DB + artifacts), created by `adk web`,
+# `adk run` and main.py inside each agent directory
+.adk/
+
+# Debate output
+debates/
+debate_transcript.md
+
+# Logs / temp
 *.log
 *.tmp
 *.swp
 
-# IDE specific
+# OS / IDE
+.DS_Store
+Thumbs.db
 .vscode/
 .idea/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sdf
