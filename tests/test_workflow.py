@@ -137,6 +137,9 @@ class FakeDebateLlm(BaseLlm):
         yield LlmResponse(
             content=types.Content(role="model", parts=[types.Part(text=text)]),
             grounding_metadata=grounding,
+            usage_metadata=types.GenerateContentResponseUsageMetadata(
+                prompt_token_count=1000, candidates_token_count=200, thoughts_token_count=100
+            ),
         )
 
 
@@ -225,6 +228,17 @@ async def test_hot_dog_debate_runs_all_rounds_with_evidence(monkeypatch):
     evidence = json.loads((await _artifact(runner, session_id, debate.EVIDENCE_ARTIFACT)).inline_data.data)
     assert evidence[0]["sources"][1]["title"] == "hot-dog.org"
 
+    # Cost: 11 flash calls x (1,000 in, 300 out incl. thinking) + 2 searches.
+    cost = state["cost_estimate"]
+    assert cost["models"] == [
+        {"model": "gemini-3.5-flash", "calls": 11, "input_tokens": 11000,
+         "output_tokens": 3300, "usd": pytest.approx(0.0462)}
+    ]
+    assert cost["search_queries"] == 2
+    assert cost["total_usd"] == pytest.approx(0.0462 + 0.028)
+    assert result["estimated_cost_usd"] == pytest.approx(0.0742)
+    assert "## Estimated cost" in transcript.text
+
 
 async def test_cereal_soup_consensus_ends_debate_early(monkeypatch):
     fake = FakeDebateLlm(consensus_on_round=1)
@@ -294,3 +308,117 @@ def test_verdict_bands():
     assert debate._verdict(80.0, 75.0, "PRO") == ("PRO", "Narrow")
     assert debate._verdict(60.0, 80.0, "CON") == ("CON", "Clear")
     assert debate._verdict(60.0, 80.0, "CONSENSUS") == ("CONSENSUS", "Consensus")
+
+
+# ---------------------------------------------------------------------------
+# Claude as judge: the real ADK AnthropicLlm + Anthropic SDK, HTTP mocked.
+# ---------------------------------------------------------------------------
+
+
+def _claude_judge_model(name: str, requests: list[dict]):
+    """AnthropicLlm whose HTTP calls are answered locally and recorded."""
+    import anthropic
+    import httpx2
+    from google.adk.models.anthropic_llm import AnthropicLlm
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        system = json.dumps(body.get("system"))
+        payload = _round_assessment(5, 9) if "debate moderator" in system else _final_eval("CON")
+        if "final judge" in system:
+            payload["con"]["argument_quality"] = 29
+        tool_name = body["tools"][0]["name"]
+        thinking = {"type": "thinking", "thinking": "Weighing both sides...", "signature": "sig"}
+        if "debate moderator" in system:  # answers through the schema tool
+            content = [thinking, {"type": "tool_use", "id": "toolu_test", "name": tool_name, "input": payload}]
+            stop = "tool_use"
+        else:  # with the tool only offered, Claude may answer in plain JSON text
+            content = [thinking, {"type": "text", "text": json.dumps(payload)}]
+            stop = "end_turn"
+        return httpx2.Response(
+            200,
+            json={
+                "id": "msg_test",
+                "type": "message",
+                "role": "assistant",
+                "model": body["model"],
+                "content": content,
+                "stop_reason": stop,
+                "stop_sequence": None,
+                "usage": {"input_tokens": 100, "output_tokens": 50},
+            },
+        )
+
+    client = anthropic.AsyncAnthropic(
+        api_key="test-key",
+        base_url="https://api.anthropic.test",
+        max_retries=0,
+        http_client=anthropic.DefaultAsyncHttpxClient(transport=httpx2.MockTransport(handle)),
+    )
+    return AnthropicLlm(model=name, client=client)
+
+
+async def test_oxford_comma_debate_with_claude_haiku_judge(monkeypatch):
+    """Gemini debates and fact-checks; Claude Haiku moderates and judges."""
+    gemini = FakeDebateLlm()
+    claude_requests: list[dict] = []
+    monkeypatch.setenv("JUDGE_MODEL", "claude-haiku-5-5")
+    monkeypatch.setenv("ENABLE_SEARCH", "true")
+    monkeypatch.setenv("ENABLE_FACT_CHECK", "true")
+    monkeypatch.setattr(
+        config,
+        "build_model",
+        lambda name: _claude_judge_model(name, claude_requests) if config.is_claude(name) else gemini,
+    )
+    monkeypatch.setattr(debate, "NODE_RETRY", RetryConfig(max_attempts=1))
+    runner = Runner(
+        app=debate.build_app(debate.build_root_agent()),
+        session_service=InMemorySessionService(),
+        artifact_service=InMemoryArtifactService(),
+    )
+    session_id, _ = await _start(runner, "Should the Oxford comma be mandatory?", 1)
+
+    # Gemini kept the search-backed roles, including the fact-checker...
+    assert set(gemini.instructions) == {
+        "pro_stance", "con_stance", "pro_debater", "con_debater", "fact_checker"
+    }
+    # ...and Claude handled the moderator and the final judge.
+    assert len(claude_requests) == 2
+    for body in claude_requests:
+        assert body["model"] == "claude-haiku-5-5"
+        assert body["thinking"]["type"] == "adaptive"
+        assert body["tool_choice"]["type"] == "auto"  # forced tool use is not allowed while thinking
+        assert "temperature" not in body
+    assert "**Supported**" in json.dumps(claude_requests[0]["system"])  # saw the fact-check
+
+    state = await _state(runner, session_id)
+    assert state["round_scores"] == [{"round": 1, "pro": 15, "con": 27}]
+    assert state["final_evaluation"]["outcome"] == "CON"
+    assert state["winner"] == "CON"
+
+    # Cost is attributed per configured model: 2 Haiku calls at 100 in / 50 out.
+    by_model = {m["model"]: m for m in state["cost_estimate"]["models"]}
+    assert by_model["claude-haiku-5-5"]["calls"] == 2
+    assert by_model["claude-haiku-5-5"]["usd"] == pytest.approx((200 * 0.10 + 100 * 0.50) / 1e6)
+    assert by_model["gemini-3.5-flash"]["calls"] == 5
+
+
+def test_model_routing(monkeypatch):
+    for var in ("DEBATE_MODEL", "JUDGE_MODEL", "FACT_CHECK_MODEL", "ENABLE_SEARCH", "ENABLE_FACT_CHECK"):
+        monkeypatch.delenv(var, raising=False)
+    assert config.is_gemini("gemini-3.5-flash")
+    assert config.is_claude("claude-haiku-5-5") and not config.is_gemini("claude-haiku-5-5")
+    assert not config.is_gemini("openai/gpt-5")
+    assert type(config.build_model("claude-haiku-5-5")).__name__ == "AnthropicLlm"
+
+    # A Claude judge leaves fact-checking on the (Gemini) debate model.
+    monkeypatch.setenv("JUDGE_MODEL", "claude-haiku-5-5")
+    assert config.fact_check_model_name() == "gemini-3.5-flash"
+    # All-Claude means no search, so no fact-checker.
+    monkeypatch.setenv("DEBATE_MODEL", "claude-haiku-5-5")
+    assert config.fact_check_model_name() is None
+    assert not config.search_enabled("claude-haiku-5-5")
+
+    assert config.generate_config("gemini-3.5-flash") is None
+    assert config.generate_config("claude-haiku-5-5").thinking_config.thinking_budget == -1

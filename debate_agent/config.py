@@ -4,20 +4,25 @@ Environment variables (all optional):
 
   DEBATE_MODEL       Model for the stance and debater agents.
   JUDGE_MODEL        Model for the moderator and final judge (defaults to
-                     DEBATE_MODEL).
+                     DEBATE_MODEL). ``claude-haiku-5-5`` makes Claude the judge.
+  FACT_CHECK_MODEL   Model for the per-round fact-checker. It needs Google
+                     Search, so it must be Gemini; defaults to JUDGE_MODEL if
+                     that is Gemini, else DEBATE_MODEL.
   MAX_DEBATE_ROUNDS  Default number of rounds when the session state does not
                      set ``max_rounds`` (default 3).
-  ENABLE_SEARCH      "true"/"false": give debaters Google Search grounding
-                     (default true; only applies to Gemini models).
-  ENABLE_FACT_CHECK  "true"/"false": run a search-backed fact-checker each
-                     round before the moderator scores it (default true;
-                     needs search, so Gemini only).
+  ENABLE_SEARCH      "true"/"false": Google Search grounding for debaters
+                     (default true; Gemini debaters only).
+  ENABLE_FACT_CHECK  "true"/"false": run the fact-checker each round before
+                     the moderator scores it (default true; needs search).
   LLM_RETRY_ATTEMPTS Retry attempts for transient Gemini API errors (default 5).
 
-Model strings containing a "/" (for example ``openai/gpt-5`` or
-``anthropic/claude-sonnet-5-5``) are routed through ADK's ``LiteLlm`` wrapper and
-need ``pip install litellm`` plus that provider's API key. Anything else is
-treated as a Gemini model id.
+Model routing:
+
+  ``claude-*``    ADK's native ``AnthropicLlm`` (Anthropic API; needs
+                  ``ANTHROPIC_API_KEY``).
+  ``provider/x``  ADK's ``LiteLlm`` wrapper (needs ``pip install litellm``),
+                  e.g. ``openai/gpt-5``.
+  anything else   Gemini.
 """
 
 from __future__ import annotations
@@ -51,8 +56,12 @@ def judge_model_name() -> str:
     return os.getenv("JUDGE_MODEL") or debate_model_name()
 
 
+def is_claude(model_name: str) -> bool:
+    return model_name.startswith("claude-")
+
+
 def is_gemini(model_name: str) -> bool:
-    return "/" not in model_name
+    return "/" not in model_name and not is_claude(model_name)
 
 
 def search_enabled(model_name: str) -> bool:
@@ -60,12 +69,26 @@ def search_enabled(model_name: str) -> bool:
     return is_gemini(model_name) and _env_bool("ENABLE_SEARCH", True)
 
 
-def fact_check_enabled(model_name: str) -> bool:
-    return search_enabled(model_name) and _env_bool("ENABLE_FACT_CHECK", True)
+def fact_check_model_name() -> str | None:
+    """The Gemini model for the fact-checker, or None if fact-checking is off."""
+    if not (_env_bool("ENABLE_SEARCH", True) and _env_bool("ENABLE_FACT_CHECK", True)):
+        return None
+    explicit = os.getenv("FACT_CHECK_MODEL")
+    if explicit:
+        return explicit if is_gemini(explicit) else None
+    for name in (judge_model_name(), debate_model_name()):
+        if is_gemini(name):
+            return name
+    return None
 
 
 def build_model(model_name: str) -> BaseLlm:
     """Returns an ADK model object for ``model_name``."""
+    if is_claude(model_name):
+        # Imported lazily: the anthropic package is only needed for Claude.
+        from google.adk.models.anthropic_llm import AnthropicLlm
+
+        return AnthropicLlm(model=model_name)
     if is_gemini(model_name):
         return Gemini(
             model=model_name,
@@ -73,7 +96,20 @@ def build_model(model_name: str) -> BaseLlm:
                 attempts=int(os.getenv("LLM_RETRY_ATTEMPTS", "5")),
             ),
         )
-    # Imported lazily: LiteLLM is an optional dependency.
     from google.adk.models.lite_llm import LiteLlm
 
     return LiteLlm(model=model_name)
+
+
+def generate_config(model_name: str) -> types.GenerateContentConfig | None:
+    """Per-model generation settings for an agent (None = model defaults).
+
+    Claude agents get adaptive thinking, set explicitly: current Claude models
+    think by default, and telling ADK so makes it offer the output-schema tool
+    rather than force it (forced tool use is rejected while thinking is on).
+    """
+    if not is_claude(model_name):
+        return None
+    return types.GenerateContentConfig(
+        thinking_config=types.ThinkingConfig(thinking_budget=-1)
+    )

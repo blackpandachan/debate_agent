@@ -120,6 +120,7 @@ class DebateResult(BaseModel):
     victory_type: Literal["Clear", "Narrow", "Draw", "Consensus"]
     margin: float
     reasoning: str
+    estimated_cost_usd: float
     transcript_markdown: str
 
 
@@ -171,3 +172,4 @@ class DebateState(BaseModel):
     final_weighted_score_pro: float = 0.0
     final_weighted_score_con: float = 0.0
     winner: str = ""
+    cost_estimate: dict[str, Any] | None = None

@@ -1,7 +1,10 @@
 google-adk>=2.13.0
 python-dotenv>=1.0.0
 
-# Optional: non-Gemini models via LiteLLM (DEBATE_MODEL=openai/..., anthropic/...)
+# Claude models (JUDGE_MODEL=claude-haiku-5-5) via ADK's AnthropicLlm
+anthropic>=2.5.0
+
+# Optional: other providers via LiteLLM (DEBATE_MODEL=openai/...)
 # litellm
 
 # Tests

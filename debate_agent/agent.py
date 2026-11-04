@@ -31,7 +31,7 @@ from google.adk.tools import google_search
 from google.adk.workflow import JoinNode, RetryConfig
 from google.genai import types
 
-from . import config, prompts
+from . import config, pricing, prompts
 from .evidence import make_evidence_recorder
 from .schemas import (
     DebateResult,
@@ -221,18 +221,23 @@ def _evidence_summary(evidence_log: list[dict[str, Any]]) -> list[str]:
     return rows
 
 
-async def publish_result(
+async def _publish(
     ctx: Context,
-    node_input: FinalEvaluation,
+    e: FinalEvaluation,
     topic: str,
     round_scores: list[dict[str, int]],
     pro_stance_text: str,
     con_stance_text: str,
     transcript_md: str,
     evidence_log: list[dict[str, Any]],
+    model_for_node: dict[str, str],
 ):
-    """Aggregates scores, saves artifacts, and emits the final report."""
-    e = node_input
+    """Aggregates scores, estimates cost, saves artifacts, emits the report."""
+    # The whole session, so a resumed debate counts its earlier attempt too.
+    cost = pricing.estimate(
+        pricing.usage_from_events(ctx.session.events, model_for_node),
+        search_queries=sum(len(x.get("queries", [])) for x in evidence_log),
+    )
     pro_score = weighted_score([r["pro"] for r in round_scores], e.pro.total)
     con_score = weighted_score([r["con"] for r in round_scores], e.con.total)
     winner, victory = _verdict(pro_score, con_score, e.outcome)
@@ -268,6 +273,7 @@ async def publish_result(
             f"**Winner:** {winner} ({victory}, margin {margin:.2f})",
             "",
             e.reasoning.strip(),
+            *cost.markdown(),
         ]
     )
     result = DebateResult(
@@ -279,6 +285,7 @@ async def publish_result(
         victory_type=victory,
         margin=margin,
         reasoning=e.reasoning,
+        estimated_cost_usd=cost.total_usd,
         transcript_markdown=report,
     )
 
@@ -303,6 +310,7 @@ async def publish_result(
             "final_weighted_score_pro": pro_score,
             "final_weighted_score_con": con_score,
             "winner": winner,
+            "cost_estimate": cost.model_dump(),
         },
     )
 
@@ -317,8 +325,10 @@ def build_root_agent() -> Workflow:
     judge_model_name = config.judge_model_name()
     debate_model = config.build_model(debate_model_name)
     judge_model = config.build_model(judge_model_name)
+    debate_config = config.generate_config(debate_model_name)
+    judge_config = config.generate_config(judge_model_name)
     with_search = config.search_enabled(debate_model_name)
-    with_fact_check = config.fact_check_enabled(judge_model_name)
+    fact_check_model_name = config.fact_check_model_name()
 
     def debater(side: str) -> Agent:
         lower = side.lower()
@@ -330,6 +340,7 @@ def build_root_agent() -> Workflow:
             tools=[google_search] if with_search else [],
             after_model_callback=make_evidence_recorder(side) if with_search else None,
             output_key=f"{lower}_argument",
+            generate_content_config=debate_config,
             retry_config=NODE_RETRY,
         )
 
@@ -342,6 +353,7 @@ def build_root_agent() -> Workflow:
             instruction=instruction,
             output_schema=Stance,
             output_key=f"{lower}_stance",
+            generate_content_config=debate_config,
             retry_config=NODE_RETRY,
         )
 
@@ -356,6 +368,7 @@ def build_root_agent() -> Workflow:
         instruction=prompts.MODERATOR,
         output_schema=RoundAssessment,
         output_key="round_assessment",
+        generate_content_config=judge_config,
         retry_config=NODE_RETRY,
     )
     final_judge = Agent(
@@ -365,17 +378,19 @@ def build_root_agent() -> Workflow:
         instruction=prompts.FINAL_JUDGE,
         output_schema=FinalEvaluation,
         output_key="final_evaluation",
+        generate_content_config=judge_config,
         retry_config=NODE_RETRY,
     )
 
     round_chain: list[Any] = [pro_debater, con_debater]
-    if with_fact_check:
+    if fact_check_model_name:
+        # Always Gemini (it needs google_search), even when Claude judges.
         # Plain text output (no output_schema): with search, that is what makes
         # Gemini return grounding metadata, i.e. real source URLs.
         round_chain.append(
             Agent(
                 name="fact_checker",
-                model=judge_model,
+                model=config.build_model(fact_check_model_name),
                 description="Verifies the round's key factual claims with search.",
                 instruction=prompts.FACT_CHECKER,
                 tools=[google_search],
@@ -385,6 +400,33 @@ def build_root_agent() -> Workflow:
             )
         )
     round_chain += [moderator, record_round]
+
+    model_for_node = {
+        "pro_stance": debate_model_name,
+        "con_stance": debate_model_name,
+        "pro_debater": debate_model_name,
+        "con_debater": debate_model_name,
+        "moderator": judge_model_name,
+        "final_judge": judge_model_name,
+    }
+    if fact_check_model_name:
+        model_for_node["fact_checker"] = fact_check_model_name
+
+    async def publish_result(
+        ctx: Context,
+        node_input: FinalEvaluation,
+        topic: str,
+        round_scores: list[dict[str, int]],
+        pro_stance_text: str,
+        con_stance_text: str,
+        transcript_md: str,
+        evidence_log: list[dict[str, Any]],
+    ):
+        async for event in _publish(
+            ctx, node_input, topic, round_scores, pro_stance_text,
+            con_stance_text, transcript_md, evidence_log, model_for_node,
+        ):
+            yield event
 
     collect_stances = JoinNode(name="collect_stances")
     return Workflow(
