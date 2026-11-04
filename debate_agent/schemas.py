@@ -4,7 +4,7 @@ ADK validates LLM output against these models (``output_schema``) and
 ``FunctionNode`` coerces incoming dicts back into them from type hints.
 """
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -121,3 +121,53 @@ class DebateResult(BaseModel):
     margin: float
     reasoning: str
     transcript_markdown: str
+
+
+class Source(BaseModel):
+    """A web source returned by Google Search grounding."""
+
+    title: str
+    uri: str
+
+
+class EvidenceEntry(BaseModel):
+    """Searches and sources behind one speaker's turn."""
+
+    round: int
+    speaker: str
+    queries: list[str] = Field(default_factory=list)
+    sources: list[Source] = Field(default_factory=list)
+
+
+class DebateState(BaseModel):
+    """Every session-state key the workflow reads or writes.
+
+    Passed to ``Workflow(state_schema=...)``: ADK rejects writes of undeclared
+    keys or wrongly typed values, and checks function-node parameters against
+    these fields when the graph is built.
+    """
+
+    # Setup (init_debate)
+    topic: str = ""
+    max_rounds: int = 0
+    current_round: int = 0
+    # Opening stances (stance agents' output_key, then record_stances)
+    pro_stance: dict[str, Any] | None = None
+    con_stance: dict[str, Any] | None = None
+    pro_stance_text: str = ""
+    con_stance_text: str = ""
+    # Current round (debater / fact-checker / moderator output_key)
+    pro_argument: str = ""
+    con_argument: str = ""
+    fact_check: str = ""
+    round_assessment: dict[str, Any] | None = None
+    # Accumulated across rounds (record_round, evidence callback)
+    round_scores: list[dict[str, int]] = Field(default_factory=list)
+    rounds_md: list[str] = Field(default_factory=list)
+    transcript_md: str = ""
+    evidence_log: list[dict[str, Any]] = Field(default_factory=list)
+    # Outcome (final_judge output_key, publish_result)
+    final_evaluation: dict[str, Any] | None = None
+    final_weighted_score_pro: float = 0.0
+    final_weighted_score_con: float = 0.0
+    winner: str = ""

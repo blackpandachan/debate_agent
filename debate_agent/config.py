@@ -9,6 +9,9 @@ Environment variables (all optional):
                      set ``max_rounds`` (default 3).
   ENABLE_SEARCH      "true"/"false": give debaters Google Search grounding
                      (default true; only applies to Gemini models).
+  ENABLE_FACT_CHECK  "true"/"false": run a search-backed fact-checker each
+                     round before the moderator scores it (default true;
+                     needs search, so Gemini only).
   LLM_RETRY_ATTEMPTS Retry attempts for transient Gemini API errors (default 5).
 
 Model strings containing a "/" (for example ``openai/gpt-5`` or
@@ -55,6 +58,10 @@ def is_gemini(model_name: str) -> bool:
 def search_enabled(model_name: str) -> bool:
     """Google Search grounding is a Gemini built-in tool."""
     return is_gemini(model_name) and _env_bool("ENABLE_SEARCH", True)
+
+
+def fact_check_enabled(model_name: str) -> bool:
+    return search_enabled(model_name) and _env_bool("ENABLE_FACT_CHECK", True)
 
 
 def build_model(model_name: str) -> BaseLlm:

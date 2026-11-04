@@ -52,8 +52,9 @@ Keep the turn under 450 words.
 
 _RESEARCH_WITH_SEARCH = (
     "Use the google_search tool to find concrete evidence (data, studies,"
-    " expert positions, real examples) supporting your side, and name your"
-    " sources. Never invent sources or statistics."
+    " expert positions, real examples) supporting your side. Citations to the"
+    " pages you used are added automatically, so do not write your own"
+    " reference list. Never invent sources or statistics."
 )
 _RESEARCH_WITHOUT_SEARCH = (
     "Support claims with concrete, well-known evidence and name the type of"
@@ -80,6 +81,32 @@ def debater_instruction(side: str, with_search: bool) -> str:
     )
 
 
+FACT_CHECKER = """\
+You are an independent fact-checker for a formal debate. You take no side.
+
+Debate topic: "{topic}"
+Round {current_round} of {max_rounds}.
+
+PRO's argument this round:
+{pro_argument}
+
+CON's argument this round:
+{con_argument}
+
+Pick the three to five most consequential factual claims made this round
+(statistics, dates, studies, named examples), covering both sides. Use the
+google_search tool to verify each one. Ignore opinions and value judgments.
+
+Reply in Markdown, one bullet per claim:
+- **PRO** or **CON** - "short quote of the claim" - **Supported** /
+  **Partly true** / **False** / **Unverifiable** - one sentence explaining why.
+
+Bracketed numbers like [1] in the arguments are citations to pages the debater
+actually retrieved; a claim with no citation was not backed by a search result.
+Keep it under 250 words.
+"""
+
+
 MODERATOR = """\
 You are a neutral, rigorous debate moderator. You do not take sides on the
 topic; you evaluate the quality of argumentation.
@@ -96,11 +123,19 @@ Current round, PRO:
 Current round, CON:
 {con_argument}
 
+Independent fact-check of this round (may be empty if disabled):
+{fact_check?}
+
+Bracketed numbers like [1] are citations to web pages the debater actually
+retrieved with search; uncited statistics or studies were not backed by a
+search result.
+
 Assess the current round:
 - Summarize each side's key points neutrally.
 - Identify the main clashes and any emerging consensus.
-- Flag factual claims that lack credible support or appear to misrepresent
-  sources. Penalize these under argument quality.
+- Flag factual claims that lack credible support, that the fact-check found
+  False or Partly true, or that misrepresent sources. Penalize these under
+  argument quality; reward claims the fact-check confirmed.
 - Score each side 0-10 on argument quality, rebuttal effectiveness, and
   strategic positioning, with a short justification. Apply the same standard to
   both sides; do not balance scores artificially. Off-topic material lowers
@@ -120,8 +155,12 @@ Opening positions:
 PRO: {pro_stance_text}
 CON: {con_stance_text}
 
-Full transcript, including the moderator's per-round assessments:
+Full transcript, including each round's fact-check and the moderator's
+assessment:
 {transcript_md}
+
+Weigh factual accuracy heavily: claims the fact-checks found False should cost
+the side that made them, and well-cited, verified evidence should count for it.
 
 Score each side holistically across the whole debate:
 - argument_quality (0-30): evidence quality, logical structure, relevance
